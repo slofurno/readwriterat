@@ -10,7 +10,7 @@ import (
 const DefaultDownloadPartSize = 1024 * 1024 * 5
 const DefaultDownloadConcurrency = 5
 
-type WriterAtReader struct {
+type ReadWriterAt struct {
 	free          chan *bytes.Buffer
 	toread        chan *bytes.Buffer
 	inuse         map[int]*bytes.Buffer
@@ -26,8 +26,8 @@ type WriterAtReader struct {
 	Debug       bool
 }
 
-func New(opts ...func(*WriterAtReader)) *WriterAtReader {
-	wat := &WriterAtReader{
+func New(opts ...func(*ReadWriterAt)) *ReadWriterAt {
+	wat := &ReadWriterAt{
 		inuse:       map[int]*bytes.Buffer{},
 		PartSize:    DefaultDownloadPartSize,
 		Concurrency: DefaultDownloadConcurrency,
@@ -37,62 +37,66 @@ func New(opts ...func(*WriterAtReader)) *WriterAtReader {
 		opts[i](wat)
 	}
 
-	wat.free = make(chan *bytes.Buffer, wat.Concurrency*4)
+	wat.free = make(chan *bytes.Buffer, wat.Concurrency)
 	wat.toread = make(chan *bytes.Buffer, wat.Concurrency*2)
 	return wat
 }
 
-func (w *WriterAtReader) Close() {
+func (w *ReadWriterAt) Close() {
 	w.checkReadable(true)
 	close(w.toread)
 }
 
-func (w *WriterAtReader) Read(p []byte) (int, error) {
+func (w *ReadWriterAt) Read(p []byte) (int, error) {
 	if w.currentReader == nil {
-		if w.Debug {
-			fmt.Println("getting next reader", w.lastRead)
-		}
 		w.lastRead = 1
 		w.currentReader = <-w.toread
 	}
 
 	if w.currentReader.Len() == 0 {
-		w.free <- w.currentReader
-		var ok bool
-		if w.Debug {
-			fmt.Println("getting next reader", w.lastRead)
-			w.lastRead++
+		select {
+		case w.free <- w.currentReader:
+		default:
 		}
+		var ok bool
+		//if w.Debug {
+		//	fmt.Println("waiting on reader:", w.lastRead)
+		//}
+
+		w.lastRead++
 		w.currentReader, ok = <-w.toread
 		if !ok {
 			return 0, io.EOF
 		}
 	}
+	if w.Debug {
+		fmt.Println("reading from:", w.lastRead)
+	}
 	return w.currentReader.Read(p)
 }
 
-func (w *WriterAtReader) waitFree() *bytes.Buffer {
+func (w *ReadWriterAt) waitFree() *bytes.Buffer {
 	select {
 	case buf := <-w.free:
 		buf.Reset()
 		return buf
 	}
 }
-func (w *WriterAtReader) getFree() *bytes.Buffer {
+func (w *ReadWriterAt) getFree() *bytes.Buffer {
 	select {
 	case buf := <-w.free:
 		buf.Reset()
 		return buf
 	default:
-		w.currentBuffers++
 		if w.Debug {
 			fmt.Println("making free:", w.currentBuffers)
 		}
+		w.currentBuffers++
 		return bytes.NewBuffer(make([]byte, 0, w.PartSize))
 	}
 }
 
-func (w *WriterAtReader) checkReadable(flush bool) {
+func (w *ReadWriterAt) checkReadable(flush bool) {
 	for i := w.nextRead; ; i++ {
 		buf, ok := w.inuse[i]
 		if !ok {
@@ -110,13 +114,13 @@ func (w *WriterAtReader) checkReadable(flush bool) {
 
 		w.nextRead++
 		if w.Debug {
-			fmt.Println("readable:", i)
+			fmt.Println("reader ready:", i)
 		}
 		w.toread <- buf
 	}
 }
 
-func (w *WriterAtReader) WriteAt(p []byte, off int64) (int, error) {
+func (w *ReadWriterAt) WriteAt(p []byte, off int64) (int, error) {
 	target := int(off / w.PartSize)
 
 	var buf *bytes.Buffer
@@ -126,13 +130,13 @@ func (w *WriterAtReader) WriteAt(p []byte, off int64) (int, error) {
 	defer w.mu.Unlock()
 	buf, ok = w.inuse[target]
 	if !ok {
-		if w.Debug {
-			fmt.Println("writing:", target)
-		}
 		buf = w.getFree()
 		w.inuse[target] = buf
 	}
 
+	if w.Debug {
+		fmt.Println("writing:", target)
+	}
 	n, err := buf.Write(p)
 	if err != nil {
 		return -1, err
