@@ -18,8 +18,12 @@ type WriterAtReader struct {
 	nextRead      int
 	currentReader *bytes.Buffer
 
+	currentBuffers int
+	lastRead       int
+
 	PartSize    int64
 	Concurrency int
+	Debug       bool
 }
 
 func New(opts ...func(*WriterAtReader)) *WriterAtReader {
@@ -34,7 +38,7 @@ func New(opts ...func(*WriterAtReader)) *WriterAtReader {
 	}
 
 	wat.free = make(chan *bytes.Buffer, wat.Concurrency*4)
-	wat.toread = make(chan *bytes.Buffer, wat.Concurrency*4)
+	wat.toread = make(chan *bytes.Buffer, wat.Concurrency*2)
 	return wat
 }
 
@@ -45,28 +49,45 @@ func (w *WriterAtReader) Close() {
 
 func (w *WriterAtReader) Read(p []byte) (int, error) {
 	if w.currentReader == nil {
+		if w.Debug {
+			fmt.Println("getting next reader", w.lastRead)
+		}
+		w.lastRead = 1
 		w.currentReader = <-w.toread
 	}
 
 	if w.currentReader.Len() == 0 {
 		w.free <- w.currentReader
 		var ok bool
+		if w.Debug {
+			fmt.Println("getting next reader", w.lastRead)
+			w.lastRead++
+		}
 		w.currentReader, ok = <-w.toread
 		if !ok {
 			return 0, io.EOF
 		}
 	}
-	n, err := w.currentReader.Read(p)
-	return n, err
+	return w.currentReader.Read(p)
 }
 
+func (w *WriterAtReader) waitFree() *bytes.Buffer {
+	select {
+	case buf := <-w.free:
+		buf.Reset()
+		return buf
+	}
+}
 func (w *WriterAtReader) getFree() *bytes.Buffer {
 	select {
 	case buf := <-w.free:
 		buf.Reset()
 		return buf
 	default:
-		fmt.Println("making free")
+		w.currentBuffers++
+		if w.Debug {
+			fmt.Println("making free:", w.currentBuffers)
+		}
 		return bytes.NewBuffer(make([]byte, 0, w.PartSize))
 	}
 }
@@ -88,6 +109,9 @@ func (w *WriterAtReader) checkReadable(flush bool) {
 		}
 
 		w.nextRead++
+		if w.Debug {
+			fmt.Println("readable:", i)
+		}
 		w.toread <- buf
 	}
 }
@@ -102,6 +126,9 @@ func (w *WriterAtReader) WriteAt(p []byte, off int64) (int, error) {
 	defer w.mu.Unlock()
 	buf, ok = w.inuse[target]
 	if !ok {
+		if w.Debug {
+			fmt.Println("writing:", target)
+		}
 		buf = w.getFree()
 		w.inuse[target] = buf
 	}
