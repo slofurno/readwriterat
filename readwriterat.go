@@ -22,7 +22,7 @@ type WriterAtReader struct {
 	Concurrency int
 }
 
-func NewWriterAtReader(opts ...func(*WriterAtReader)) *WriterAtReader {
+func New(opts ...func(*WriterAtReader)) *WriterAtReader {
 	wat := &WriterAtReader{
 		inuse:       map[int]*bytes.Buffer{},
 		PartSize:    DefaultDownloadPartSize,
