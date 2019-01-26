@@ -104,6 +104,7 @@ func (w *ReadWriterAt) checkReadable(flush bool) {
 		}
 
 		if flush {
+			delete(w.inuse, i)
 			w.toread <- buf
 			continue
 		}
@@ -116,6 +117,7 @@ func (w *ReadWriterAt) checkReadable(flush bool) {
 		if w.Debug {
 			fmt.Println("reader ready:", i)
 		}
+		delete(w.inuse, i)
 		w.toread <- buf
 	}
 }
