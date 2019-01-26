@@ -1,7 +1,6 @@
 package readwriterat
 
 import (
-	"fmt"
 	"io"
 	"io/ioutil"
 	"sync"
@@ -12,10 +11,10 @@ import (
 type chunkWriter struct {
 	src         []byte
 	concurrency int
+	partsize    int64
 }
 
 func (w chunkWriter) WriteChunks(writer io.WriterAt) {
-	partsize := int(len(w.src) / w.concurrency)
 	wg := sync.WaitGroup{}
 	wg.Add(w.concurrency)
 
@@ -24,8 +23,8 @@ func (w chunkWriter) WriteChunks(writer io.WriterAt) {
 			if i == 0 {
 				time.Sleep(100 * time.Millisecond)
 			}
-			chunk := w.src[i*partsize : (i+1)*partsize]
-			writer.WriteAt(chunk, int64(i*partsize))
+			chunk := w.src[i*int(w.partsize) : (i+1)*int(w.partsize)]
+			writer.WriteAt(chunk, int64(i*int(w.partsize)))
 			wg.Done()
 		}(i)
 	}
@@ -33,24 +32,51 @@ func (w chunkWriter) WriteChunks(writer io.WriterAt) {
 	wg.Wait()
 }
 
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
 func TestSlowReader(t *testing.T) {
-	src, _ := ioutil.ReadFile("./readwriterat.go")
+	src, err := ioutil.ReadFile("./readwriterat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	concurrency := 20
+	partsize := int64(len(src) / concurrency)
+	expected := src[:int64(concurrency)*partsize]
 
 	cw := chunkWriter{
 		src:         src,
 		concurrency: concurrency,
+		partsize:    partsize,
 	}
 
 	writer := New()
 	writer.Debug = true
-	writer.PartSize = int64(len(src) / concurrency)
+	writer.PartSize = partsize
 
 	go func() {
 		cw.WriteChunks(writer)
 		writer.Close()
 	}()
-	fmt.Println("next")
 
-	ioutil.ReadAll(writer)
+	actual, err := ioutil.ReadAll(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytesEqual(actual, expected) {
+		t.Errorf("read bytes != expected")
+	}
+
 }
