@@ -24,6 +24,8 @@ type ReadWriterAt struct {
 	PartSize    int64
 	Concurrency int
 	Debug       bool
+
+	lasterr chan error
 }
 
 func New(opts ...func(*ReadWriterAt)) *ReadWriterAt {
@@ -31,6 +33,7 @@ func New(opts ...func(*ReadWriterAt)) *ReadWriterAt {
 		inuse:       map[int]*bytes.Buffer{},
 		PartSize:    DefaultDownloadPartSize,
 		Concurrency: DefaultDownloadConcurrency,
+		lasterr:     make(chan error, 1),
 	}
 
 	for i := range opts {
@@ -47,6 +50,14 @@ func (w *ReadWriterAt) Close() {
 	close(w.toread)
 }
 
+func (w *ReadWriterAt) CloseWithError(err error) {
+	if err != nil {
+		w.lasterr <- err
+	}
+
+	w.Close()
+}
+
 func (w *ReadWriterAt) Read(p []byte) (int, error) {
 	if w.currentReader == nil {
 		w.lastRead = 1
@@ -55,6 +66,8 @@ func (w *ReadWriterAt) Read(p []byte) (int, error) {
 
 	if w.currentReader.Len() == 0 {
 		select {
+		case err := <-w.lasterr:
+			return 0, err
 		case w.free <- w.currentReader:
 		default:
 		}

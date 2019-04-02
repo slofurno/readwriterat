@@ -1,6 +1,7 @@
 package readwriterat
 
 import (
+	"fmt"
 	"io"
 	"io/ioutil"
 	"sync"
@@ -77,6 +78,37 @@ func TestSlowReader(t *testing.T) {
 
 	if !bytesEqual(actual, expected) {
 		t.Errorf("read bytes != expected")
+	}
+
+}
+
+func TestSlowReaderError(t *testing.T) {
+	src, err := ioutil.ReadFile("./readwriterat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrency := 20
+	partsize := int64(len(src) / concurrency)
+	//expected := src[:int64(concurrency)*partsize]
+
+	cw := chunkWriter{
+		src:         src,
+		concurrency: concurrency,
+		partsize:    partsize,
+	}
+
+	writer := New()
+	writer.Debug = true
+	writer.PartSize = partsize
+
+	expected := fmt.Errorf("test error")
+	go func() {
+		cw.WriteChunks(writer)
+		writer.CloseWithError(expected)
+	}()
+
+	if _, err := ioutil.ReadAll(writer); err != expected {
+		t.Fatal("expected error")
 	}
 
 }
